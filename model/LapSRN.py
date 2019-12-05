@@ -15,141 +15,75 @@ import tensorflow as tf
 class LapSRN:
     def __init__(self,optimizer):
         self.optimizer = optimizer
+        self.filters = 64
+        self.D = 5
+        self.R = 8
+        self.kernel = (3,3)
         
-        
-        
-    def feature_embedding(self):
+    def build_conv(self):
         _in = Input((None,None,64))
-        # Conv1
-        x = Conv2D(64, (3, 3),
-                   activation='relu',
+        x = Conv2D(self.filters, self.kernel,
                    padding='same',
                    kernel_initializer = 'he_normal',
-                   name='feat_emb1')(_in)
+                   name='conv1')(_in)
         x = LeakyReLU(alpha=0.2)(x)
-        # Conv2
-        x = Conv2D(64, (3, 3),
-                   padding='same',
-                   kernel_initializer = 'he_normal',
-                   name='feat_emb2')(_in)
-        x = LeakyReLU(alpha=0.2)(x)
-        # Conv3
-        x = Conv2D(64, (3, 3),
-                   padding='same',
-                   kernel_initializer = 'he_normal',
-                   name='feat_emb3')(_in)
-        x = LeakyReLU(alpha=0.2)(x)
-        # Conv4
-        x = Conv2D(64, (3, 3),
-                   padding='same',
-                   kernel_initializer = 'he_normal',
-                   name='feat_emb4')(_in)
-        x = LeakyReLU(alpha=0.2)(x)
-        # Conv5
-        x = Conv2D(64, (3, 3),
-                   padding='same',
-                   kernel_initializer = 'he_normal',
-                   name='feat_emb5')(_in)
-        x = LeakyReLU(alpha=0.2)(x)
+        for idx in range(self.D-1):
+            x = Conv2D(self.filters, self.kernel,
+                       padding='same',
+                       kernel_initializer = 'he_normal',
+                       name='conv'+str(idx+2))(x)
+            x = LeakyReLU(alpha=0.2)(x)
+        return Model(_in,x)
+        
+    def feature_embedding(self,shared_conv):
+        _in = Input((None,None,64))
+        x = shared_conv(_in)
         return Model(_in,x)
 
-    def feature_upsampling(self):
-        def bilinear_init(shape):
-            # https://github.com/tensorlayer/tensorlayer/issues/53
-            num_channels = shape[3]
-            bilinear_kernel = np.zeros([shape[1], shape[2]], dtype=np.float32)
-            scale_factor = (shape[1] + 1) // 2
-            if shape[1] % 2 == 1:
-                center = scale_factor - 1
-            else:
-                center = scale_factor - 0.5
-            for x in range(shape[1]):
-                for y in range(shape[1]):
-                    bilinear_kernel[x,y] = (1 - abs(x - center) / scale_factor) * \
-                                           (1 - abs(y - center) / scale_factor)
-            weights = np.zeros((shape[1], shape[2], num_channels, num_channels))
-            for i in range(num_channels):
-                weights[:, :, i, i] = bilinear_kernel
-            return K.variable(weights)
-        
-        # Start
+    def bilinear_init(self,shape):
+        # https://github.com/tensorlayer/tensorlayer/issues/53
+        num_channels = shape[3]
+        bilinear_kernel = np.zeros([shape[0], shape[1]], dtype=np.float32)
+        scale_factor = (shape[0] + 1) // 2
+        if shape[1] % 2 == 1:
+            center = scale_factor - 1
+        else:
+            center = scale_factor - 0.5
+        for x in range(shape[0]):
+            for y in range(shape[1]):
+                bilinear_kernel[x,y] = (1 - abs(x - center) / scale_factor) * (1 - abs(y - center) / scale_factor)
+        weights = np.zeros((shape[0], shape[1], num_channels, num_channels))
+        for i in range(num_channels):
+            weights[:, :, i, i] = bilinear_kernel
+        return K.variable(weights)
+
+    def feature_upsampling(self): 
         _in = Input((None,None,64))
-        x = Conv2DTranspose(64,(3,3),
+        x = Conv2DTranspose(64,(4,4),
                             strides=2,
                             padding='same',
-                            kernel_initializer = bilinear_init,
+                            kernel_initializer = self.bilinear_init,
+                            use_bias=False,
                             name='feat_up')(_in)
         return Model(_in,x)
 
     def image_upsampling(self):
-        def bilinear_init(shape):
-            # https://github.com/tensorlayer/tensorlayer/issues/53
-            num_channels = shape[3]
-            bilinear_kernel = np.zeros([shape[1], shape[2]], dtype=np.float32)
-            scale_factor = (shape[1] + 1) // 2
-            if shape[1] % 2 == 1:
-                center = scale_factor - 1
-            else:
-                center = scale_factor - 0.5
-            for x in range(shape[1]):
-                for y in range(shape[1]):
-                    bilinear_kernel[x,y] = (1 - abs(x - center) / scale_factor) * \
-                                           (1 - abs(y - center) / scale_factor)
-            weights = np.zeros((shape[1], shape[2], num_channels, num_channels))
-            for i in range(num_channels):
-                weights[:, :, i, i] = bilinear_kernel
-            return K.variable(weights)
-        
-        # Start
         _in = Input((None,None,3))
-        x = Conv2DTranspose(3,(3,3),
+        x = Conv2DTranspose(3,(4,4),
                             strides=2,
                             padding='same',
-                            kernel_initializer = bilinear_init,
+                            kernel_initializer = self.bilinear_init,
+                            use_bias=False,
                             name='img_up')(_in)
         return Model(_in,x)
     
-    def conv_res(self):
-        def residual_block(_input,skip_conn,num):
-            # Conv 1
-            a = ReLU()(_input)
-            a = Conv2D(64, (3, 3),
-                       padding='same',
-                       kernel_initializer = 'he_normal',
-                       name='conv_res1'+str(num))(a)
-            # Conv 2
-            a = ReLU()(a)
-            a = Conv2D(64, (3, 3),
-                       padding='same',
-                       kernel_initializer = 'he_normal',
-                       name='conv_res2'+str(num))(a)
-            # Conv 3
-            a = ReLU()(a)
-            a = Conv2D(64, (3, 3),
-                       padding='same',
-                       kernel_initializer = 'he_normal',
-                       name='conv_res3'+str(num))(a)
-            # Conv 4
-            a = ReLU()(a)
-            a = Conv2D(64, (3, 3),
-                       padding='same',
-                       kernel_initializer = 'he_normal',
-                       name='conv_res4'+str(num))(a)
-            # Conv 5
-            a = ReLU()(a)
-            a = Conv2D(64, (3, 3),
-                       padding='same',
-                       kernel_initializer = 'he_normal',
-                       name='conv_res5'+str(num))(a)
-            a = Add(name='res_add'+str(num))([a,skip_conn])
-            return a
-
-        residual_blocks = 8
+    def conv_res(self,shared_conv):
 
         _in = Input((None,None,64))
-        x = residual_block(_in,skip_conn = _in,num = 1)
-        for idx in range(residual_blocks-1):
-            x = residual_block(x,skip_conn = _in,num = idx+2)
+
+        x = shared_conv(_in)
+        for idx in range(self.R-1):
+            x = shared_conv(x)
 
         x = Conv2D(3,(3,3),
                    strides=1,
@@ -160,11 +94,13 @@ class LapSRN:
 
         return Model(_in,x)
 
+
     def build_LapSRN(self):
         # Parameter Sharing
-        shared_feat_emb = self.feature_embedding()
+        shared_conv = self.build_conv()
+        shared_feat_emb = self.feature_embedding(shared_conv)
         shared_feat_up = self.feature_upsampling()
-        shared_conv_res = self.conv_res()
+        shared_conv_res = self.conv_res(shared_conv)
         shared_img_up = self.image_upsampling()
         
         # Network
